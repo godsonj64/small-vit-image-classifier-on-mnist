@@ -1,46 +1,42 @@
-# Dataset Directory
+# Dataset: MNIST
 
-## MNIST
+## Overview
+MNIST is a classic benchmark dataset of 70,000 grayscale 28×28 images of handwritten digits (0–9).
+- **Training set:** 60,000 images
+- **Test set:** 10,000 images
+- **Classes:** 10 (digits 0 through 9)
 
-The MNIST dataset is **downloaded automatically** by `torchvision` the first time you run training. No manual steps are required.
-
-After the first run the directory will look like:
+## Automatic Download
+The dataset is downloaded automatically by `torchvision` the first time you run `src/train.py`. It will be saved under `./data/MNIST/`.
 
 ```
 data/
-└── mnist/
-    ├── MNIST/
-    │   └── raw/
-    │       ├── train-images-idx3-ubyte
-    │       ├── train-labels-idx1-ubyte
-    │       ├── t10k-images-idx3-ubyte
-    │       └── t10k-labels-idx1-ubyte
+└── MNIST/
+    └── raw/
+        ├── train-images-idx3-ubyte
+        ├── train-labels-idx1-ubyte
+        ├── t10k-images-idx3-ubyte
+        └── t10k-labels-idx1-ubyte
+```
+
+## Manual Download
+If you are in an air-gapped environment, download the four binary files from:
+```
+http://yann.lecun.com/exdb/mnist/
+```
+and place them in `data/MNIST/raw/`.
+
+## Image Folder Format (custom data)
+If you want to use your own digit images instead of MNIST, organise them as:
+```
+data/
+├── train/
+│   ├── 0/   ← PNG/JPG images of digit 0
+│   ├── 1/
+│   └── ...
+└── val/
+    ├── 0/
+    ├── 1/
     └── ...
 ```
-
-## Format
-
-- **Images**: 28 × 28 grayscale PNG / raw binary
-- **Labels**: integers 0–9 representing handwritten digit classes
-- **Train set**: 60 000 samples (90 % train / 10 % validation split applied at runtime)
-- **Test set**: 10 000 samples
-
-## Custom `image_folder` datasets
-
-If you want to replace MNIST with your own data, organise it in the standard `ImageFolder` layout:
-
-```
-data/
-└── my_dataset/
-    ├── train/
-    │   ├── class_0/
-    │   │   ├── img001.png
-    │   │   └── ...
-    │   └── class_1/
-    │       └── ...
-    └── test/
-        ├── class_0/
-        └── class_1/
-```
-
-Then update `configs/default.yaml` → `dataset.name: image_folder` and point `dataset.data_dir` at `data/my_dataset`.
+Then set `dataset.name: image_folder` in `configs/default.yaml`.

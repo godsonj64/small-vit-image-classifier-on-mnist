@@ -1,108 +1,88 @@
-"""Export a trained model to ONNX and TorchScript formats."""
-
-from __future__ import annotations
+"""Export the trained model to ONNX and TorchScript formats."""
 
 import argparse
 import os
+import sys
 
 import torch
-import torch.nn as nn
 
-from model import build_model
-from utils import load_config, get_device, load_checkpoint
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.model import build_model
+from src.utils import load_config, load_checkpoint
 
 
-def export_onnx(
-    model: nn.Module,
-    save_path: str,
-    image_size: int,
-    in_channels: int,
-    batch_size: int = 1,
-) -> None:
-    """Trace the model and save it in ONNX format."""
-    model.eval()
-    dummy = torch.zeros(batch_size, in_channels, image_size, image_size, device=next(model.parameters()).device)
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+def export_onnx(model: torch.nn.Module, dummy_input: torch.Tensor, path: str, opset: int):
+    """Trace and save the model in ONNX format."""
     torch.onnx.export(
         model,
-        dummy,
-        save_path,
+        dummy_input,
+        path,
+        export_params=True,
+        opset_version=opset,
+        do_constant_folding=True,
         input_names=["input"],
         output_names=["logits"],
-        dynamic_axes={"input": {0: "batch_size"}, "logits": {0: "batch_size"}},
-        opset_version=17,
-        do_constant_folding=True,
+        dynamic_axes={
+            "input":  {0: "batch_size"},
+            "logits": {0: "batch_size"},
+        },
     )
-    print(f"[INFO] ONNX model saved to {save_path}")
+    print(f"ONNX model saved → {path}")
 
-
-def export_torchscript(
-    model: nn.Module,
-    save_path: str,
-    image_size: int,
-    in_channels: int,
-) -> None:
-    """Trace the model and save it as a TorchScript file."""
-    model.eval()
-    dummy = torch.zeros(1, in_channels, image_size, image_size, device=next(model.parameters()).device)
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    with torch.no_grad():
-        traced = torch.jit.trace(model, dummy)
-    traced.save(save_path)
-    print(f"[INFO] TorchScript model saved to {save_path}")
-
-
-def verify_onnx(save_path: str, image_size: int, in_channels: int) -> None:
-    """Quick sanity check: run one forward pass via ONNXRuntime."""
+    # Quick sanity check
     try:
-        import onnxruntime as ort
-        import numpy as np
+        import onnx
+        onnx_model = onnx.load(path)
+        onnx.checker.check_model(onnx_model)
+        print("ONNX model check passed.")
+    except ImportError:
+        print("onnx package not found; skipping model check.")
 
-        sess = ort.InferenceSession(save_path, providers=["CPUExecutionProvider"])
-        dummy = np.zeros((1, in_channels, image_size, image_size), dtype=np.float32)
-        out = sess.run(["logits"], {"input": dummy})
-        print(f"[INFO] ONNX verification passed. Output shape: {out[0].shape}")
-    except Exception as exc:
-        print(f"[WARN] ONNX verification skipped: {exc}")
+
+def export_torchscript(model: torch.nn.Module, dummy_input: torch.Tensor, path: str):
+    """Trace and save the model in TorchScript format."""
+    scripted = torch.jit.trace(model, dummy_input)
+    scripted.save(path)
+    print(f"TorchScript model saved → {path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export trained model")
-    parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--checkpoint", default=None, help="Path to .pt checkpoint")
+    parser = argparse.ArgumentParser(description="Export trained ViT model")
+    parser.add_argument("--config",     default="configs/default.yaml", help="Path to YAML config")
+    parser.add_argument("--checkpoint", default=None,                   help="Path to .pth checkpoint")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    device = get_device()
 
-    checkpoint_path = args.checkpoint or cfg["outputs"]["best_model"]
-    print(f"[INFO] Loading checkpoint: {checkpoint_path}")
+    ckpt_path = args.checkpoint or os.path.join(
+        cfg["paths"]["output_dir"], cfg["paths"]["checkpoint_name"]
+    )
+    output_dir = cfg["paths"]["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
 
-    model = build_model(cfg).to(device)
-    load_checkpoint(model, checkpoint_path, device)
+    device     = torch.device("cpu")   # export on CPU for portability
+    model      = build_model(cfg).to(device)
+    load_checkpoint(model, ckpt_path, device)
     model.eval()
 
-    image_size: int = cfg["dataset"]["image_size"]
-    in_channels: int = cfg["model"]["in_channels"]
+    img_size   = cfg["dataset"]["image_size"]
+    in_ch      = cfg["model"]["in_channels"]
+    batch_size = 1
+    dummy      = torch.zeros(batch_size, in_ch, img_size, img_size, device=device)
 
-    # ONNX
-    export_onnx(
-        model,
-        cfg["outputs"]["onnx_model"],
-        image_size,
-        in_channels,
-    )
-    verify_onnx(cfg["outputs"]["onnx_model"], image_size, in_channels)
+    export_cfg  = cfg["export"]
+    opset       = export_cfg.get("opset_version", 17)
 
-    # TorchScript
-    export_torchscript(
-        model,
-        cfg["outputs"]["torchscript_model"],
-        image_size,
-        in_channels,
-    )
+    onnx_path = os.path.join(output_dir, export_cfg["onnx_filename"])
+    ts_path   = os.path.join(output_dir, export_cfg["torchscript_filename"])
 
-    print("[INFO] Export complete.")
+    export_onnx(model, dummy, onnx_path, opset)
+    export_torchscript(model, dummy, ts_path)
+
+    print("\nExport complete.")
+    print(f"  ONNX        : {onnx_path}")
+    print(f"  TorchScript : {ts_path}")
 
 
 if __name__ == "__main__":

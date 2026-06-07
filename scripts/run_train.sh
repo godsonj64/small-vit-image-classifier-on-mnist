@@ -1,37 +1,39 @@
 #!/usr/bin/env bash
-# ──────────────────────────────────────────────────────────────────────────────
-# run_train.sh  –  Train → Evaluate → Export pipeline for ViT-MNIST
-# ──────────────────────────────────────────────────────────────────────────────
+# run_train.sh — Train the Small ViT on MNIST, then evaluate and export.
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
-export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
-
-CONFIG="$PROJECT_ROOT/configs/default.yaml"
-CHECKPOINT="$PROJECT_ROOT/outputs/best_model.pt"
+CONFIG="configs/default.yaml"
+OUTPUT_DIR="outputs"
+CHECKPOINT="${OUTPUT_DIR}/best_model.pth"
 
 echo "=========================================="
-echo "  ViT-Tiny MNIST — Training Pipeline"
+echo " Small ViT MNIST — Training Pipeline"
 echo "=========================================="
-
-# ── 1. Train ──────────────────────────────────────────────────────────────────
+echo "Config     : ${CONFIG}"
+echo "Output dir : ${OUTPUT_DIR}"
 echo ""
-echo "[STEP 1/3] Training..."
-python "$PROJECT_ROOT/src/train.py" --config "$CONFIG"
 
-# ── 2. Evaluate ───────────────────────────────────────────────────────────────
-echo ""
-echo "[STEP 2/3] Evaluating on test set..."
-python "$PROJECT_ROOT/src/evaluate.py" --config "$CONFIG" --checkpoint "$CHECKPOINT"
+mkdir -p "${OUTPUT_DIR}"
 
-# ── 3. Export ─────────────────────────────────────────────────────────────────
+# ── Step 1: Train ────────────────────────────────────────────────────────────
+echo "[1/3] Starting training …"
+python src/train.py --config "${CONFIG}"
 echo ""
-echo "[STEP 3/3] Exporting model (ONNX + TorchScript)..."
-python "$PROJECT_ROOT/src/export.py" --config "$CONFIG" --checkpoint "$CHECKPOINT"
 
+# ── Step 2: Evaluate ─────────────────────────────────────────────────────────
+echo "[2/3] Evaluating best checkpoint …"
+python src/evaluate.py --config "${CONFIG}" --checkpoint "${CHECKPOINT}"
 echo ""
+
+# ── Step 3: Export ───────────────────────────────────────────────────────────
+echo "[3/3] Exporting model …"
+python src/export.py --config "${CONFIG}" --checkpoint "${CHECKPOINT}"
+echo ""
+
 echo "=========================================="
-echo "  Pipeline complete! Artefacts in outputs/"
+echo " Pipeline complete!"
+echo "  Checkpoint  : ${CHECKPOINT}"
+echo "  ONNX        : ${OUTPUT_DIR}/model.onnx"
+echo "  TorchScript : ${OUTPUT_DIR}/model_torchscript.pt"
 echo "=========================================="

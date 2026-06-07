@@ -1,10 +1,9 @@
 """Shared utility functions for the ViT-MNIST project."""
 
-from __future__ import annotations
-
 import os
 import random
-from typing import Any
+import logging
+from typing import Optional
 
 import numpy as np
 import torch
@@ -12,102 +11,118 @@ import torch.nn as nn
 import yaml
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Reproducibility
+# ─────────────────────────────────────────────────────────────────────────────
+
+def set_seed(seed: int = 42) -> None:
+    """Fix random seeds for reproducible results."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # Slightly slower but fully deterministic on GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark     = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Config
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def load_config(path: str) -> dict:
-    """Load a YAML config file and return it as a plain Python dict."""
+    """Load a YAML config file and return it as a nested dict."""
     with open(path, "r") as f:
         cfg = yaml.safe_load(f)
     return cfg
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Reproducibility
-# ──────────────────────────────────────────────────────────────────────────────
-
-def seed_everything(seed: int) -> None:
-    """Seed Python, NumPy, and PyTorch for reproducible results."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Device
-# ──────────────────────────────────────────────────────────────────────────────
-
-def get_device() -> torch.device:
-    """Return the best available device (CUDA > MPS > CPU)."""
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Checkpointing
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def save_checkpoint(
-    model: nn.Module,
+    model:     nn.Module,
     optimizer: torch.optim.Optimizer,
-    epoch: int,
-    val_acc: float,
-    path: str,
+    epoch:     int,
+    val_acc:   float,
+    path:      str,
 ) -> None:
-    """Save model weights, optimiser state, epoch, and val_acc to disk."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "val_acc": val_acc,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        },
-        path,
-    )
+    """Save model weights, optimiser state, epoch, and best metric."""
+    state = {
+        "epoch":     epoch,
+        "val_acc":   val_acc,
+        "model":     model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }
+    torch.save(state, path)
 
 
 def load_checkpoint(
-    model: nn.Module,
-    path: str,
+    model:  nn.Module,
+    path:   str,
     device: torch.device,
+    optimizer: Optional[torch.optim.Optimizer] = None,
 ) -> dict:
-    """Load model weights from a checkpoint file."""
-    checkpoint = torch.load(path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    return checkpoint
+    """Load a checkpoint and restore model (and optionally optimizer) weights."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+    state = torch.load(path, map_location=device)
+    model.load_state_dict(state["model"])
+    if optimizer is not None and "optimizer" in state:
+        optimizer.load_state_dict(state["optimizer"])
+    return state
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Metric helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Metrics
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AverageMeter:
-    """Track and compute the running average of a scalar value."""
+    """Tracks a running average of a scalar (e.g. loss) over mini-batches."""
 
     def __init__(self):
         self.reset()
 
     def reset(self):
-        self.val = 0.0
-        self.avg = 0.0
-        self.sum = 0.0
+        self.val   = 0.0
+        self.avg   = 0.0
+        self.sum   = 0.0
         self.count = 0
 
     def update(self, val: float, n: int = 1):
-        self.val = val
-        self.sum += val * n
+        self.val    = val
+        self.sum   += val * n
         self.count += n
-        self.avg = self.sum / self.count if self.count > 0 else 0.0
+        self.avg    = self.sum / self.count
 
 
-def count_parameters(model: nn.Module) -> int:
-    """Return the number of trainable parameters in a model."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def compute_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    """Return top-1 accuracy as a Python float."""
+    preds   = logits.argmax(dim=1)
+    correct = (preds == labels).sum().item()
+    return correct / labels.size(0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
+    """Create a simple logger that writes to stdout (and optionally a file)."""
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S")
+
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
+
+        if log_file:
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            fh = logging.FileHandler(log_file)
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+
+    return logger

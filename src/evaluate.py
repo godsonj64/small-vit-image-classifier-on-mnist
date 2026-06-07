@@ -1,114 +1,71 @@
-"""Evaluate a trained checkpoint on the test set.
-
-Outputs:
-  - Accuracy
-  - Macro-averaged F1
-  - Confusion matrix (saved as PNG)
-"""
-
-from __future__ import annotations
+"""Evaluation script — computes accuracy and macro F1 on the test split."""
 
 import argparse
 import os
+import sys
 
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    f1_score,
-    classification_report,
-)
+from sklearn.metrics import classification_report, f1_score, accuracy_score
+import numpy as np
 
-from dataset import build_dataloaders
-from model import build_model
-from utils import load_config, get_device, load_checkpoint
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.dataset import get_dataloaders
+from src.model   import build_model
+from src.utils   import load_config, load_checkpoint
 
 
 @torch.no_grad()
-def run_inference(model, loader, device):
-    """Collect all predictions and ground-truth labels from a DataLoader."""
+def run_evaluation(model, loader, device):
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds  = []
+    all_labels = []
+
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         logits = model(images)
-        preds = logits.argmax(dim=1).cpu().numpy()
+        preds  = logits.argmax(dim=1).cpu().numpy()
         all_preds.extend(preds)
         all_labels.extend(labels.numpy())
+
     return np.array(all_labels), np.array(all_preds)
 
 
-def plot_confusion_matrix(
-    cm: np.ndarray,
-    class_names: list[str],
-    save_path: str,
-) -> None:
-    """Plot and save a confusion matrix as a PNG file."""
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-    plt.colorbar(im, ax=ax)
-
-    tick_marks = np.arange(len(class_names))
-    ax.set_xticks(tick_marks)
-    ax.set_xticklabels(class_names, rotation=45, ha="right")
-    ax.set_yticks(tick_marks)
-    ax.set_yticklabels(class_names)
-
-    thresh = cm.max() / 2.0
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            ax.text(
-                j, i, format(cm[i, j], "d"),
-                ha="center", va="center",
-                color="white" if cm[i, j] > thresh else "black",
-                fontsize=9,
-            )
-
-    ax.set_ylabel("True label", fontsize=12)
-    ax.set_xlabel("Predicted label", fontsize=12)
-    ax.set_title("Confusion Matrix", fontsize=14)
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=150)
-    plt.close(fig)
-    print(f"[INFO] Confusion matrix saved to {save_path}")
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate a trained MNIST model")
-    parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--checkpoint", default=None, help="Path to .pt checkpoint")
+    parser = argparse.ArgumentParser(description="Evaluate Small ViT on MNIST test set")
+    parser.add_argument("--config",     default="configs/default.yaml", help="Path to YAML config")
+    parser.add_argument("--checkpoint", default=None,                   help="Path to .pth checkpoint")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    device = get_device()
 
-    checkpoint_path = args.checkpoint or cfg["outputs"]["best_model"]
-    print(f"[INFO] Loading checkpoint: {checkpoint_path}")
+    ckpt_path = args.checkpoint or os.path.join(
+        cfg["paths"]["output_dir"], cfg["paths"]["checkpoint_name"]
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    print(f"Loading checkpoint: {ckpt_path}")
 
     model = build_model(cfg).to(device)
-    load_checkpoint(model, checkpoint_path, device)
+    load_checkpoint(model, ckpt_path, device)
 
-    _, _, test_loader = build_dataloaders(cfg)
+    _, _, test_loader = get_dataloaders(cfg)
 
-    print("[INFO] Running inference on test set...")
-    labels, preds = run_inference(model, test_loader, device)
+    print("Running evaluation on test set …")
+    y_true, y_pred = run_evaluation(model, test_loader, device)
 
-    acc = accuracy_score(labels, preds)
-    f1 = f1_score(labels, preds, average="macro")
-    cm = confusion_matrix(labels, preds)
-    class_names = [str(i) for i in range(cfg["dataset"]["num_classes"])]
+    acc = accuracy_score(y_true, y_pred)
+    f1  = f1_score(y_true, y_pred, average="macro")
 
     print("\n" + "=" * 50)
-    print(f"  Test Accuracy : {acc * 100:.2f}%")
-    print(f"  Macro F1 Score: {f1:.4f}")
+    print(f"Test Accuracy : {acc:.4f}  ({acc*100:.2f}%)")
+    print(f"Test F1 (macro): {f1:.4f}")
     print("=" * 50)
-    print("\nPer-class report:")
-    print(classification_report(labels, preds, target_names=class_names))
 
-    plot_confusion_matrix(cm, class_names, cfg["outputs"]["confusion_matrix"])
+    class_names = [str(i) for i in range(cfg["model"]["num_classes"])]
+    print("\nPer-class report:")
+    print(classification_report(y_true, y_pred, target_names=class_names, digits=4))
 
 
 if __name__ == "__main__":

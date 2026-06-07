@@ -1,42 +1,48 @@
-# ── Dataset ──────────────────────────────────────────────────────────────────
+# ── Dataset ────────────────────────────────────────────────────────────────────
 dataset:
   name: mnist
-  data_dir: data/mnist
-  image_size: 28          # Native MNIST resolution; ViT will resize internally
+  data_dir: ./data
+  image_size: 28
   num_classes: 10
   num_workers: 4
   pin_memory: true
 
-# ── Model ────────────────────────────────────────────────────────────────────
+# ── Model ──────────────────────────────────────────────────────────────────────
 model:
-  name: vit_tiny          # Options: vit_tiny | cnn_baseline
-  # ViT-Tiny hyper-params
-  patch_size: 4           # 28/4 = 7×7 = 49 patches
-  dim: 192
-  depth: 6
-  num_heads: 3
-  mlp_dim: 384
-  dropout: 0.1
-  # Shared
-  in_channels: 1          # MNIST is greyscale
+  architecture: small_vit   # options: small_vit | baseline_cnn
+  in_channels: 1            # MNIST is grayscale
   num_classes: 10
+  # ViT-specific
+  image_size: 28
+  patch_size: 7             # 28/7 = 4x4 = 16 patches
+  dim: 128                  # embedding dimension
+  depth: 4                  # number of transformer layers
+  heads: 4                  # number of attention heads
+  mlp_dim: 256              # feed-forward hidden size
+  dropout: 0.1
+  emb_dropout: 0.1
 
-# ── Training ─────────────────────────────────────────────────────────────────
+# ── Training ───────────────────────────────────────────────────────────────────
 training:
   epochs: 20
-  batch_size: 256
+  batch_size: 128
   learning_rate: 3.0e-4
   weight_decay: 1.0e-4
-  label_smoothing: 0.1
+  optimizer: adamw          # options: adamw | sgd
+  scheduler: cosine         # options: cosine | step | none
   warmup_epochs: 2
+  label_smoothing: 0.1
+  grad_clip: 1.0
   seed: 42
-  val_split: 0.1          # Fraction of training set used for validation
 
-# ── Outputs ──────────────────────────────────────────────────────────────────
-outputs:
-  dir: outputs
-  best_model: outputs/best_model.pt
-  last_model: outputs/last_model.pt
-  onnx_model: outputs/model.onnx
-  torchscript_model: outputs/model_torchscript.pt
-  confusion_matrix: outputs/confusion_matrix.png
+# ── Paths ──────────────────────────────────────────────────────────────────────
+paths:
+  output_dir: ./outputs
+  checkpoint_name: best_model.pth
+  log_file: ./outputs/train.log
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+export:
+  onnx_filename: model.onnx
+  torchscript_filename: model_torchscript.pt
+  opset_version: 17

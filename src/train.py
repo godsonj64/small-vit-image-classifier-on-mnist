@@ -1,132 +1,177 @@
-"""Training loop for ViT-Tiny / CNN on MNIST."""
-
-from __future__ import annotations
+"""Training script for the Small ViT MNIST classifier."""
 
 import argparse
 import os
+import sys
 import time
 
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR
-from tqdm import tqdm
+from torch.optim import AdamW, SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 
-from dataset import build_dataloaders
-from model import build_model
-from utils import load_config, seed_everything, get_device, AverageMeter, save_checkpoint
+# Allow running from repo root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.dataset import get_dataloaders
+from src.model   import build_model
+from src.utils   import (
+    set_seed,
+    load_config,
+    save_checkpoint,
+    AverageMeter,
+    compute_accuracy,
+)
+
+
+def build_optimizer(model: nn.Module, cfg: dict):
+    train_cfg = cfg["training"]
+    opt_name  = train_cfg["optimizer"].lower()
+    lr        = train_cfg["learning_rate"]
+    wd        = train_cfg["weight_decay"]
+
+    if opt_name == "adamw":
+        return AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    elif opt_name == "sgd":
+        return SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=wd)
+    else:
+        raise ValueError(f"Unknown optimizer: {opt_name}")
+
+
+def build_scheduler(optimizer, cfg: dict, steps_per_epoch: int):
+    train_cfg  = cfg["training"]
+    sched_name = train_cfg["scheduler"].lower()
+    epochs     = train_cfg["epochs"]
+    warmup     = train_cfg.get("warmup_epochs", 0)
+
+    if sched_name == "cosine":
+        # Linear warmup then cosine decay
+        def lr_lambda(epoch):
+            if epoch < warmup:
+                return float(epoch + 1) / float(max(1, warmup))
+            progress = float(epoch - warmup) / float(max(1, epochs - warmup))
+            return 0.5 * (1.0 + torch.tensor(progress * 3.14159).cos().item())
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    elif sched_name == "step":
+        return StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.1)
+    elif sched_name == "none":
+        return None
+    else:
+        raise ValueError(f"Unknown scheduler: {sched_name}")
 
 
 def train_one_epoch(
-    model: nn.Module,
-    loader,
-    criterion: nn.Module,
-    optimizer,
-    scheduler,
-    device: torch.device,
+    model, loader, criterion, optimizer, device, grad_clip: float
 ) -> float:
-    """Run one full pass over the training set and return average loss."""
     model.train()
     loss_meter = AverageMeter()
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+
         optimizer.zero_grad()
         logits = model(images)
-        loss = criterion(logits, labels)
+        loss   = criterion(logits, labels)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        if grad_clip > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
         optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
         loss_meter.update(loss.item(), images.size(0))
 
     return loss_meter.avg
 
 
 @torch.no_grad()
-def validate(
-    model: nn.Module,
-    loader,
-    criterion: nn.Module,
-    device: torch.device,
-):
-    """Evaluate on the validation set and return (avg_loss, accuracy)."""
+def validate(model, loader, criterion, device):
     model.eval()
     loss_meter = AverageMeter()
     correct = 0
-    total = 0
+    total   = 0
 
     for images, labels in loader:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         logits = model(images)
-        loss = criterion(logits, labels)
+        loss   = criterion(logits, labels)
         loss_meter.update(loss.item(), images.size(0))
-        preds = logits.argmax(dim=1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
 
-    accuracy = correct / total if total > 0 else 0.0
-    return loss_meter.avg, accuracy
+        preds    = logits.argmax(dim=1)
+        correct += (preds == labels).sum().item()
+        total   += labels.size(0)
+
+    acc = correct / total
+    return loss_meter.avg, acc
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train ViT-Tiny on MNIST")
+    parser = argparse.ArgumentParser(description="Train Small ViT on MNIST")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML config")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    seed_everything(cfg["training"]["seed"])
-    device = get_device()
+    set_seed(cfg["training"]["seed"])
 
-    os.makedirs(cfg["outputs"]["dir"], exist_ok=True)
+    output_dir = cfg["paths"]["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
 
-    print(f"[INFO] Using device: {device}")
-    print(f"[INFO] Building dataloaders for dataset: {cfg['dataset']['name']}")
-    train_loader, val_loader, _ = build_dataloaders(cfg)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    print(f"[INFO] Building model: {cfg['model']['name']}")
+    # ── Data ──────────────────────────────────────────────────────────────────
+    train_loader, val_loader, _ = get_dataloaders(cfg)
+    print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
+
+    # ── Model ─────────────────────────────────────────────────────────────────
     model = build_model(cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[INFO] Trainable parameters: {n_params:,}")
+    print(f"Model: {cfg['model']['architecture']} | Trainable params: {n_params:,}")
 
-    criterion = nn.CrossEntropyLoss(label_smoothing=cfg["training"]["label_smoothing"])
-    optimizer = AdamW(
-        model.parameters(),
-        lr=cfg["training"]["learning_rate"],
-        weight_decay=cfg["training"]["weight_decay"],
+    # ── Loss / Optimizer / Scheduler ──────────────────────────────────────────
+    criterion = nn.CrossEntropyLoss(
+        label_smoothing=cfg["training"].get("label_smoothing", 0.0)
     )
+    optimizer = build_optimizer(model, cfg)
+    scheduler = build_scheduler(optimizer, cfg, len(train_loader))
+    grad_clip = cfg["training"].get("grad_clip", 0.0)
 
-    total_steps = len(train_loader) * cfg["training"]["epochs"]
-    warmup_steps = len(train_loader) * cfg["training"]["warmup_epochs"]
-    scheduler = OneCycleLR(
-        optimizer,
-        max_lr=cfg["training"]["learning_rate"],
-        total_steps=total_steps,
-        pct_start=warmup_steps / total_steps,
-        anneal_strategy="cos",
-    )
+    # ── Training loop ─────────────────────────────────────────────────────────
+    epochs    = cfg["training"]["epochs"]
+    best_acc  = 0.0
+    ckpt_path = os.path.join(output_dir, cfg["paths"]["checkpoint_name"])
 
-    epochs = cfg["training"]["epochs"]
-    best_val_acc = 0.0
+    log_path = cfg["paths"].get("log_file", os.path.join(output_dir, "train.log"))
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
-    for epoch in range(1, epochs + 1):
-        t0 = time.time()
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device)
-        _, val_acc = validate(model, val_loader, criterion, device)
+    with open(log_path, "w") as log_f:
+        for epoch in range(1, epochs + 1):
+            t0 = time.time()
 
-        # ── Canonical log line (parsed by runner) ──────────────────────────
-        print(f"epoch {epoch}/{epochs} loss={train_loss:.4f} val_acc={val_acc:.4f}")
+            train_loss = train_one_epoch(
+                model, train_loader, criterion, optimizer, device, grad_clip
+            )
+            val_loss, val_acc = validate(model, val_loader, criterion, device)
 
-        # Save best checkpoint
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            save_checkpoint(model, optimizer, epoch, val_acc, cfg["outputs"]["best_model"])
+            if scheduler is not None:
+                scheduler.step()
 
-    # Always save last checkpoint
-    save_checkpoint(model, optimizer, epochs, val_acc, cfg["outputs"]["last_model"])
-    print(f"[INFO] Training complete. Best val_acc={best_val_acc:.4f}")
-    print(f"[INFO] Best checkpoint saved to {cfg['outputs']['best_model']}")
+            # ── Required log line (parsed by the runner) ───────────────────
+            log_line = (
+                f"epoch {epoch}/{epochs} "
+                f"loss={train_loss:.4f} "
+                f"val_acc={val_acc:.4f}"
+            )
+            print(log_line)
+            log_f.write(log_line + "\n")
+            log_f.flush()
+
+            # Save best checkpoint
+            if val_acc > best_acc:
+                best_acc = val_acc
+                save_checkpoint(model, optimizer, epoch, val_acc, ckpt_path)
+
+    print(f"\nTraining complete. Best val_acc={best_acc:.4f}")
+    print(f"Best checkpoint saved to: {ckpt_path}")
 
 
 if __name__ == "__main__":

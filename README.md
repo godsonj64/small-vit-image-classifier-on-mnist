@@ -1,6 +1,6 @@
 # Small ViT Image Classifier on MNIST
 
-This project trains a lightweight **Vision Transformer (ViT-Tiny)** from scratch on the classic **MNIST** handwritten digit dataset, classifying grayscale 28×28 images into one of 10 digit categories (0–9). A small **CNN baseline** is also included for comparison.
+This project trains a lightweight Vision Transformer (ViT) to classify handwritten digits (0–9) from the MNIST dataset. A small CNN baseline is also included for comparison.
 
 ## Project Structure
 
@@ -9,20 +9,21 @@ This project trains a lightweight **Vision Transformer (ViT-Tiny)** from scratch
 ├── configs/
 │   └── default.yaml        # All hyperparameters and paths
 ├── data/
-│   └── README.md           # How dataset is organised on disk
+│   └── README.md           # How to obtain / organise the dataset
 ├── scripts/
 │   └── run_train.sh        # One-click training script
 ├── src/
-│   ├── dataset.py          # Dataset loading & augmentation
-│   ├── model.py            # ViT-Tiny & CNN baseline definitions
+│   ├── dataset.py          # Data loading and augmentation
+│   ├── model.py            # ViT and CNN baseline architectures
 │   ├── train.py            # Training loop
-│   ├── evaluate.py         # Metrics: accuracy, F1, confusion matrix
-│   ├── export.py           # ONNX & TorchScript export
-│   └── utils.py            # Shared helpers (seeding, logging, etc.)
+│   ├── evaluate.py         # Evaluation (accuracy + F1)
+│   ├── export.py           # ONNX and TorchScript export
+│   └── utils.py            # Shared helpers
 ├── tests/
 │   └── test_model_forward.py
 ├── Dockerfile
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
 
 ## Quick Start
@@ -32,26 +33,28 @@ This project trains a lightweight **Vision Transformer (ViT-Tiny)** from scratch
 pip install -r requirements.txt
 ```
 
-### 2. Train
+### 2. Prepare data
+See `data/README.md`. The dataset will be auto-downloaded by torchvision the first time you run training.
+
+### 3. Train
 ```bash
 bash scripts/run_train.sh
-# or directly:
+```
+Or manually:
+```bash
 python src/train.py --config configs/default.yaml
 ```
 
-### 3. Evaluate
+### 4. Evaluate
 ```bash
-python src/evaluate.py --config configs/default.yaml --checkpoint outputs/best_model.pt
+python src/evaluate.py --config configs/default.yaml --checkpoint outputs/best_model.pth
 ```
 
-### 4. Export
+### 5. Export
 ```bash
-python src/export.py --config configs/default.yaml --checkpoint outputs/best_model.pt
+python src/export.py --config configs/default.yaml --checkpoint outputs/best_model.pth
 ```
-
-Exported artefacts land in `outputs/`:
-- `model.onnx`
-- `model_torchscript.pt`
+This produces `outputs/model.onnx` and `outputs/model_torchscript.pt`.
 
 ## Docker
 ```bash
@@ -59,17 +62,18 @@ docker build -t vit-mnist .
 docker run --rm -v $(pwd)/outputs:/app/outputs vit-mnist
 ```
 
+## Metrics
+- **Accuracy** – fraction of correctly classified digits
+- **F1 Score** – macro-averaged F1 across all 10 classes
+
 ## Models
+| Model | Description |
+|-------|-------------|
+| SmallViT | Lightweight Vision Transformer (4 layers, 4 heads, patch 7) |
+| BaselineCNN | Simple 3-layer CNN trained from scratch |
 
-| Model | Parameters | Notes |
-|-------|-----------|-------|
-| ViT-Tiny (main) | ~5 M | Patch size 4, depth 6 |
-| Small CNN (baseline) | ~200 K | 3 conv blocks + FC |
-
-## Metrics Reported
-- **Accuracy** – overall correct classifications
-- **F1 Score** – macro-averaged F1 across 10 classes
-- **Confusion Matrix** – saved as `outputs/confusion_matrix.png`
-
-## Dataset
-MNIST is downloaded automatically via `torchvision` on first run into `data/mnist/`.
+## Expected Results
+| Model | Val Accuracy | Val F1 |
+|-------|-------------|--------|
+| BaselineCNN | ~98.5% | ~0.985 |
+| SmallViT | ~99.2% | ~0.992 |
